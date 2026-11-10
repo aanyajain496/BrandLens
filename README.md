@@ -5,8 +5,6 @@ guidelines, facts and terminology, explains every issue, cites the exact source,
 writer's intent. People accept, edit or dismiss each suggestion, then a manager or reviewer approves. Everything is
 logged.
 
-Built solo for the Inkloom AI challenge, Round 2.
-
 ## Try it (no setup for judges)
 Open the live link, then:
 1. Open **Nova launch post** and press **Run review**.
