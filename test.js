@@ -2,7 +2,7 @@
 process.env.DATA_DIR = require('fs').mkdtempSync(require('path').join(require('os').tmpdir(), 'bl-'));
 delete process.env.ANTHROPIC_API_KEY;
 const assert = require('assert');
-const { runRules, isGrounded, parseAiFindings, applyReplacement, createServer, SEED_SOURCES } = require('./server');
+const { rewriteOptions, checkCandidate, runRules, isGrounded, parseAiFindings, applyReplacement, createServer, SEED_SOURCES } = require('./server');
 let pass = 0; const t = (name, fn) => Promise.resolve(fn()).then(() => { pass++; console.log('  ok  ' + name); }, e => { console.log('FAIL  ' + name + '\n      ' + e.message); process.exitCode = 1; });
 
 (async () => {
@@ -29,6 +29,25 @@ let pass = 0; const t = (name, fn) => Promise.resolve(fn()).then(() => { pass++;
   await t('rejects non-JSON AI output', () => assert.throws(() => parseAiFindings('Sorry, I cannot')));
   await t('applyReplacement tidies spacing', () => assert.strictEqual(applyReplacement('Hi there , Hurry up now.', 'Hurry up', ''), 'Hi there, now.'));
 
+
+  console.log('Rewrite options (Improvement 1)');
+  const nova = "Meet Nova, the world's fastest smart bottle!\nThis little GADGET is guaranteed to cut hydration mistakes by 100%. The battery lasts 30 days on a single charge, and it is cheap enough for everyone. Hurry, this offer won't last!!";
+  const nf = runRules(nova, SEED_SOURCES);
+  await t('every offered option really fixes the issue and adds no medium/high issue', async () => {
+    for (const x of nf) { const r = await rewriteOptions(x, nova, SEED_SOURCES); for (const o of r.options) assert(checkCandidate(nova, x, o.text, SEED_SOURCES).ok, x.sourceId + ' ' + o.label); }
+  });
+  await t('claims get several distinct options, including an approved-fact version', async () => {
+    const x = nf.find(f => f.sourceId === 'F2'), r = await rewriteOptions(x, nova, SEED_SOURCES);
+    assert(r.options.length >= 2); assert(new Set(r.options.map(o => o.text)).size === r.options.length); assert(r.options.some(o => o.text.includes('up to 14 days')));
+  });
+  await t('a candidate that keeps the problem is rejected', () => { const x = nf.find(f => f.sourceId === 'G4'); assert(!checkCandidate(nova, x, x.excerpt, SEED_SOURCES).ok); });
+  await t('a candidate that creates a new high-severity problem is rejected', () => { const x = nf.find(f => f.sourceId === 'T2'); assert(!checkCandidate(nova, x, 'the best in the world', SEED_SOURCES).ok); });
+  await t('long sentences get a split option', async () => {
+    const long = 'Nova is a smart bottle that tracks your water, reminds you to drink, and it syncs with your phone so that you can see how your week went without opening any other app today.';
+    const lf = runRules(long, SEED_SOURCES).find(f => f.sourceId === 'R1'); const r = await rewriteOptions(lf, long, SEED_SOURCES);
+    assert(r.options.length === 1 && /\. [A-Z]/.test(r.options[0].text));
+  });
+
   console.log('Workflow over HTTP');
   const srv = createServer(); await new Promise(r => srv.listen(0, r));
   const base = 'http://localhost:' + srv.address().port;
@@ -41,6 +60,23 @@ let pass = 0; const t = (name, fn) => Promise.resolve(fn()).then(() => { pass++;
     const d = (await call('priya', 'documents/' + id)).body, f = d.versions.at(-1).findings.find(x => x.sourceId === 'T1');
     const r = await call('priya', `documents/${id}/findings/${f.id}`, 'POST', { action: 'accept' });
     assert(r.body.versions.at(-1).content.includes('smart bottle') && !/gadget/i.test(r.body.versions.at(-1).content)); assert.strictEqual(r.body.versions.length, 2);
+  });
+  await t('options endpoint and apply action work over HTTP and are logged', async () => {
+    const d = (await call('priya', 'documents/' + id)).body, f = d.versions.at(-1).findings.find(x => x.status === 'open' && x.sourceId === 'G3');
+    const o = await call('priya', `documents/${id}/findings/${f.id}/options`); assert.strictEqual(o.status, 200); assert(o.body.options.length >= 1);
+    const r = await call('priya', `documents/${id}/findings/${f.id}`, 'POST', { action: 'apply', replacement: o.body.options[0].text, label: o.body.options[0].label });
+    assert.strictEqual(r.status, 200); assert(r.body.events.some(e => e.type === 'accepted' && /option/.test(e.note)));
+  });
+  await t('handling a finding twice gives a clear 409, not a crash', async () => {
+    const d = (await call('priya', 'documents/' + id)).body, f = d.versions.at(-1).findings.find(x => x.status === 'accepted');
+    assert.strictEqual((await call('priya', `documents/${id}/findings/${f.id}`, 'POST', { action: 'accept' })).status, 409);
+  });
+  await t('malformed JSON returns 400', async () => { const r = await fetch(base + '/api/documents', { method: 'POST', headers: { 'x-user': 'priya', 'content-type': 'application/json' }, body: '{bad' }); assert.strictEqual(r.status, 400); });
+  await t('empty, oversized and unknown requests are rejected cleanly', async () => {
+    assert.strictEqual((await call('priya', 'documents', 'POST', { title: '', content: '' })).status, 400);
+    assert.strictEqual((await call('priya', 'documents', 'POST', { title: 'x', content: 'a'.repeat(20001) })).status, 400);
+    assert.strictEqual((await call('priya', 'documents/nope')).status, 404);
+    assert.strictEqual((await call('priya', 'nothing')).status, 404);
   });
   await t('dismiss needs a reason', async () => {
     const d = (await call('priya', 'documents/' + id)).body, f = d.versions.at(-1).findings.find(x => x.status === 'open');
