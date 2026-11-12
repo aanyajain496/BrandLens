@@ -8,6 +8,8 @@
 </head>
 <body>
 <div id="app"></div>
+<dialog id="dlg" aria-labelledby="dlgTitle"><div class="dlg"><h3 id="dlgTitle"></h3><p id="dlgHelp" class="muted small"></p>
+<textarea id="dlgText" maxlength="5000" aria-label="Your text"></textarea><div class="row" style="justify-content:flex-end;margin-top:10px"><button class="btn ghost" type="button" id="dlgCancel">Cancel</button><button class="btn" type="button" id="dlgOk">Save</button></div></div></dialog>
 <div id="toast" role="status" aria-live="polite"></div>
 <script src="/app.js"></script>
 </body>

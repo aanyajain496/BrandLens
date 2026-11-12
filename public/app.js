@@ -1,5 +1,6 @@
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
-const S = { user: localStorage.getItem('bl_user') || 'priya', users: [], docs: [], ai: {}, sources: [], view: 'home', doc: null, tab: 'review', sel: null, editing: false, busy: false };
+const S = { user: localStorage.getItem('bl_user') || 'priya', users: [], docs: [], ai: {}, sources: [], view: 'home', doc: null, tab: 'review', sel: null, editing: false, busy: false, opts: {} };
+const $ = s => document.querySelector(s);
 const STATUS = { draft: 'Draft', in_review: 'In review', approved: 'Approved', changes_requested: 'Changes requested' };
 const EVENT = { created: 'created the document', review: 'ran a review', edit: 'edited the text', accepted: 'accepted a suggestion', edited: 'applied their own fix',
   dismiss: 'dismissed a finding', submit: 'submitted for approval', approve: 'approved', approve_override: 'approved with open high-severity findings', changes: 'requested changes', comment: 'commented' };
@@ -22,9 +23,39 @@ async function run(fn, busyMsg) {
 }
 const me = () => S.users.find(u => u.id === S.user) || { role: 'creator', name: '' };
 async function refresh() { Object.assign(S, await api('state')); if (S.doc) S.doc = await api('documents/' + S.doc.id); }
-async function openDoc(id) { S.doc = await api('documents/' + id); S.view = 'doc'; S.tab = 'review'; S.sel = null; S.editing = false; }
+async function openDoc(id) { S.doc = await api('documents/' + id); location.hash = '#doc/' + id; S.view = 'doc'; S.tab = 'review'; S.sel = null; S.editing = false; }
 const cur = () => S.doc.versions[S.doc.versions.length - 1];
 const editable = () => ['draft', 'changes_requested'].includes(S.doc.status);
+
+
+function ask({ title, help, value = '', ok = 'Save' }) {
+  return new Promise(res => {
+    const d = $('#dlg'), tx = $('#dlgText');
+    $('#dlgTitle').textContent = title; $('#dlgHelp').textContent = help || ''; tx.value = value; $('#dlgOk').textContent = ok;
+    const done = v => { d.onclose = null; d.close(); res(v); };
+    $('#dlgOk').onclick = () => done(tx.value); $('#dlgCancel').onclick = () => done(null); d.onclose = () => res(null);
+    d.showModal(); tx.focus();
+  });
+}
+function diffHtml(a, b) {
+  const A = a.split(/\s+/).filter(Boolean), B = b.split(/\s+/).filter(Boolean), n = A.length, m = B.length;
+  if (!B.length) return '<del>' + esc(a) + '</del> <span class="muted small">(this text is removed)</span>';
+  const L = Array.from({ length: n + 1 }, () => Array(m + 1).fill(0));
+  for (let i = n - 1; i >= 0; i--) for (let j = m - 1; j >= 0; j--) L[i][j] = A[i] === B[j] ? L[i + 1][j + 1] + 1 : Math.max(L[i + 1][j], L[i][j + 1]);
+  let i = 0, j = 0; const out = [];
+  while (i < n && j < m) { if (A[i] === B[j]) { out.push(esc(A[i])); i++; j++; } else if (L[i + 1][j] >= L[i][j + 1]) out.push('<del>' + esc(A[i++]) + '</del>'); else out.push('<ins>' + esc(B[j++]) + '</ins>'); }
+  while (i < n) out.push('<del>' + esc(A[i++]) + '</del>'); while (j < m) out.push('<ins>' + esc(B[j++]) + '</ins>');
+  return out.join(' ');
+}
+function optionsPanel(f) {
+  const o = S.opts[f.id]; if (!o) return '';
+  if (o.loading) return '<div class="optbox muted small">Checking rewrite options against the brand kit…</div>';
+  if (!o.list.length) return `<div class="optbox muted small">No safe automatic rewrite was found for this one. Use Edit to write your own.${o.note ? '<br>' + esc(o.note) : ''}</div>`;
+  return `<div class="optbox"><div class="small muted" style="margin-bottom:6px">Each option was re-checked against the brand kit and fixes this issue without adding a new one.</div>${o.list.map((x, i) => `<div class="opt">
+    <div class="row" style="justify-content:space-between"><strong>${esc(x.label)}</strong><span class="muted small">${x.origin === 'ai' ? 'AI-assisted' : 'Rule-based'}</span></div>
+    <div class="diff">${diffHtml(f.excerpt, x.text)}</div>${x.note ? `<div class="small muted">${esc(x.note)}</div>` : ''}
+    <button class="btn sm" data-act="useopt" data-id="${f.id}" data-i="${i}">Use this</button></div>`).join('')}${o.note ? `<div class="small muted">${esc(o.note)}</div>` : ''}</div>`;
+}
 
 function highlighted(content, findings) {
   const marks = [];
@@ -50,9 +81,10 @@ function findingCard(f, canAct) {
     <div class="src"><strong>${esc(f.sourceId)}${src ? ' · ' + esc(src.title) : ''}</strong><br>${esc(f.sourceQuote)}</div>
     <div class="sugg"><strong>Suggestion:</strong> ${esc(f.suggestion)}${f.replacement ? `<br><span class="small">Becomes: “${esc(f.replacement)}”</span>` : ''}</div>
     ${canAct ? `<div class="row">
-      <button class="btn sm" data-act="accept" data-id="${f.id}" ${f.replacement === null ? 'disabled title="No automatic fix. Use Edit."' : ''}>Accept</button>
+      <button class="btn sm" data-act="accept" data-id="${f.id}" ${f.replacement === null ? 'disabled title="No single automatic fix. See rewrite options."' : ''}>Accept suggestion</button>
+      <button class="btn sm ghost" data-act="opts" data-id="${f.id}">${S.opts[f.id] ? 'Hide options' : 'Rewrite options'}</button>
       <button class="btn sm ghost" data-act="edit" data-id="${f.id}">Edit</button>
-      <button class="btn sm warn" data-act="dismiss" data-id="${f.id}">Dismiss</button></div>` : ''}</div>`;
+      <button class="btn sm warn" data-act="dismiss" data-id="${f.id}">Dismiss</button></div>${optionsPanel(f)}` : ''}</div>`;
 }
 
 function docView() {
@@ -71,7 +103,7 @@ function docView() {
   const roleNote = !canAct && isCreator ? `<p class="note">This document is ${STATUS[d.status].toLowerCase()}, so it is locked for editing.</p>` : (!isCreator && d.status !== 'in_review' ? `<p class="muted small">Switch to Priya (creator) to edit, or wait until this is submitted for approval.</p>` : '');
   const runNote = v.run ? `<div class="${v.run.note ? 'note' : 'muted small'}" style="${v.run.note ? '' : 'margin-bottom:10px'}">${v.run.mode === 'ai+rules' ? `AI-assisted review (${esc(v.run.model)}) plus rule checks. ${v.run.dropped ? `${v.run.dropped} AI flag(s) were dropped because they could not be matched to an approved source.` : 'Every AI flag was matched to an approved source.'}` : esc(v.run.note)}</div>` : '';
   const body = S.tab === 'review' ? `<div class="cols"><div class="card">
-      ${S.editing ? `<textarea id="editBox" style="min-height:260px">${esc(v.content)}</textarea><div class="row" style="margin-top:8px"><button class="btn" data-act="saveText">Save as new version</button></div>`
+      ${S.editing ? `<textarea id="editBox" maxlength="20000" style="min-height:260px">${esc(v.content)}</textarea><div class="row" style="margin-top:8px"><button class="btn" data-act="saveText">Save as new version</button></div>`
         : `<div class="text">${highlighted(v.content, v.findings)}</div>`}
       ${roleNote}</div>
     <div>${runNote}${!v.run ? `<div class="card empty">No review yet.${canAct ? '<br>Press <strong>Run review</strong> to check this text against the brand kit.' : ''}</div>` :
@@ -94,9 +126,12 @@ function historyView() {
 function homeView() {
   const creator = me().role === 'creator';
   return `<h1>Review content before it goes live</h1>
-    <div class="hint"><strong>Try it in two minutes.</strong> Open “Nova launch post”, press <em>Run review</em>, accept or dismiss a few findings, then submit it. Switch to Marcus (manager) or Dana (reviewer) at the top right to approve it.</div>
+    <div class="card" style="margin-bottom:18px"><h2>Demo accounts</h2><p class="muted small" style="margin:0 0 10px">No password needed. Click an account to sign in as that person. You are signed in as <strong>${esc(me().name)}</strong>.</p>
+      <div class="demo">${[['priya', 'Priya', 'Creator', 'Writes drafts, runs reviews, fixes findings.'], ['marcus', 'Marcus', 'Manager', 'Approves, can override with a note, edits the brand kit.'], ['dana', 'Dana', 'Reviewer', 'Approves or requests changes.']]
+        .map(([id, n, r, d]) => `<button class="acct ${S.user === id ? 'on' : ''}" data-act="login" data-id="${id}"><strong>${n}</strong> · ${r}<br><span class="small muted">${d}</span></button>`).join('')}</div></div>
+    <div class="hint"><strong>Try it in two minutes.</strong> As Priya, open “Nova launch post”, press <em>Run review</em>, click <em>Rewrite options</em> on a finding, then submit it. Sign in as Marcus or Dana to approve it.</div>
     ${creator ? `<div class="card" style="margin-bottom:18px"><h2>Start a new review</h2><input type="text" id="nTitle" placeholder="Title, for example “Spring campaign post”" style="margin-bottom:8px">
-      <textarea id="nText" placeholder="Paste your draft here, or load a .txt file below"></textarea>
+      <textarea id="nText" maxlength="20000" placeholder="Paste your draft here, or load a .txt file below"></textarea>
       <div class="row" style="margin-top:8px"><input type="file" id="nFile" accept=".txt,.md" aria-label="Load a text file"><button class="btn" data-act="create">Create and open</button></div></div>` : `<p class="muted">Only creators start new reviews. Switch to Priya to add one.</p>`}
     <h2>All documents</h2>${S.docs.map(d => `<div class="card" style="margin-bottom:8px;cursor:pointer" data-act="open" data-id="${d.id}"><div class="row" style="justify-content:space-between"><strong>${esc(d.title)}</strong><span class="pill ${d.status}">${STATUS[d.status]}</span></div>
       <div class="small muted">Version ${d.version} · ${d.open} open finding(s) · by ${esc(d.author)}</div></div>`).join('') || '<div class="empty">No documents yet.</div>'}`;
@@ -124,17 +159,17 @@ function render() {
     <main>${S.busy ? `<p class="note">${S.busy === true ? 'Working…' : esc(S.busy)}</p>` : ''}${main}</main></div>`;
   document.getElementById('who').onchange = async e => { S.user = e.target.value; localStorage.setItem('bl_user', S.user); await refresh().catch(() => { S.view = 'home'; S.doc = null; }); S.editing = false; render(); };
   const f = document.getElementById('nFile');
-  if (f) f.onchange = () => { const file = f.files[0]; if (!file) return; const r = new FileReader(); r.onload = () => { document.getElementById('nText').value = r.result; const t = document.getElementById('nTitle'); if (!t.value) t.value = file.name.replace(/\.\w+$/, ''); }; r.readAsText(file); };
+  if (f) f.onchange = () => { const file = f.files[0]; if (!file) return; if (!/\.(txt|md)$/i.test(file.name)) { toast('Please choose a .txt or .md file.'); f.value = ''; return; } if (file.size > 200000) { toast('That file is too large (200 KB limit).'); f.value = ''; return; } const r = new FileReader(); r.onload = () => { document.getElementById('nText').value = r.result; const t = document.getElementById('nTitle'); if (!t.value) t.value = file.name.replace(/\.\w+$/, ''); }; r.readAsText(file); };
 }
 
 document.addEventListener('click', e => {
   const el = e.target.closest('[data-act]'); if (!el) return;
   const act = el.dataset.act, id = el.dataset.id, val = i => (document.getElementById(i) || {}).value || '';
   if (el.tagName === 'A') e.preventDefault();
-  const post = (p, b) => api(p, 'POST', b).then(async d => { await refresh(); if (d && d.versions) S.doc = d; });
+  const post = (p, b) => api(p, 'POST', b).then(async d => { S.opts = {}; await refresh(); if (d && d.versions) S.doc = d; });
   const doc = () => 'documents/' + S.doc.id + '/';
   const map = {
-    home: () => { S.view = 'home'; S.doc = null; refresh().then(render); },
+    home: () => { S.view = 'home'; S.doc = null; history.replaceState(null, '', location.pathname); refresh().then(render); },
     kit: () => run(async () => { S.sources = await api('sources'); S.view = 'kit'; }),
     tab: () => { S.tab = id; render(); },
     sel: () => { S.sel = id; render(); const m = document.querySelector('mark.sel'); if (m) m.scrollIntoView({ block: 'center', behavior: 'smooth' }); },
@@ -144,8 +179,11 @@ document.addEventListener('click', e => {
     editText: () => { S.editing = !S.editing; render(); },
     saveText: () => run(async () => { S.doc = await api(doc() + 'content', 'POST', { content: val('editBox') }); S.editing = false; toast('Saved as a new version. Re-run the review to refresh findings.'); }),
     accept: () => run(async () => { await post(doc() + 'findings/' + id, { action: 'accept' }); }),
-    edit: () => { const f = cur().findings.find(x => x.id === id); const v = prompt('Write your own replacement for this text:', f.replacement || f.excerpt); if (v !== null) run(async () => { await post(doc() + 'findings/' + id, { action: 'edit', replacement: v }); }); },
-    dismiss: () => { const r = prompt('Why are you dismissing this finding? (short reason)'); if (r !== null) run(async () => { await post(doc() + 'findings/' + id, { action: 'dismiss', reason: r }); }); },
+    edit: async () => { const f = cur().findings.find(x => x.id === id); const v = await ask({ title: 'Write your own replacement', help: 'This replaces: “' + f.excerpt.slice(0, 120) + '”', value: f.replacement || f.excerpt }); if (v !== null) run(async () => { await post(doc() + 'findings/' + id, { action: 'edit', replacement: v }); }); },
+    dismiss: async () => { const r = await ask({ title: 'Dismiss this finding', help: 'Add a short reason. It is saved in the history and helps improve the guidelines.', ok: 'Dismiss' }); if (r !== null) run(async () => { await post(doc() + 'findings/' + id, { action: 'dismiss', reason: r }); }); },
+    opts: async () => { if (S.opts[id]) { delete S.opts[id]; return render(); } S.opts[id] = { loading: true }; render(); try { const r = await api(doc() + 'findings/' + id + '/options'); S.opts[id] = { list: r.options, note: r.note }; } catch (e) { delete S.opts[id]; toast(e.message); } render(); },
+    useopt: () => { const o = S.opts[id].list[Number(el.dataset.i)]; run(async () => { await post(doc() + 'findings/' + id, { action: 'apply', replacement: o.text, label: o.label }); }); },
+    login: async () => { S.user = id; localStorage.setItem('bl_user', id); S.editing = false; await refresh().catch(() => { S.view = 'home'; S.doc = null; }); render(); toast('Signed in as ' + me().name + '.'); },
     submit: () => run(async () => { await post(doc() + 'submit'); toast('Submitted. Switch to Marcus or Dana to decide.'); }),
     approve: () => run(async () => { await post(doc() + 'decision', { decision: 'approve', note: val('decNote') }); }),
     changes: () => run(async () => { await post(doc() + 'decision', { decision: 'changes', note: val('decNote') }); }),
@@ -155,4 +193,12 @@ document.addEventListener('click', e => {
   };
   if (map[act]) map[act]();
 });
-refresh().then(render).catch(e => { document.getElementById('app').innerHTML = '<p style="padding:24px">Could not reach the server: ' + esc(e.message) + '</p>'; });
+async function fromHash() {
+  const m = location.hash.match(/^#doc\/(\w+)$/);
+  if (!m) { if (S.view === 'doc' && !location.hash) { S.view = 'home'; S.doc = null; } return render(); }
+  try { S.sources = await api('sources'); await openDoc(m[1]); }
+  catch (e) { history.replaceState(null, '', location.pathname); S.view = 'home'; S.doc = null; toast('That document was not found, so here is the list.'); }
+  render();
+}
+window.addEventListener('hashchange', () => { if (!S.doc || location.hash !== '#doc/' + S.doc.id) fromHash(); });
+refresh().then(fromHash).catch(e => { document.getElementById('app').innerHTML = '<p style="padding:24px">Could not reach the server: ' + esc(e.message) + '</p>'; });
