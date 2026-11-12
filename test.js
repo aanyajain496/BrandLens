@@ -93,6 +93,29 @@ let pass = 0; const t = (name, fn) => Promise.resolve(fn()).then(() => { pass++;
     const r = await call('marcus', `documents/${id}/decision`, 'POST', { decision: 'approve', note: 'Legal confirmed in email' });
     assert.strictEqual(r.body.status, 'approved'); assert(r.body.events.some(e => e.type === 'approve_override'));
   });
+  await t('insights flag often-dismissed rules and leave well-followed rules healthy', async () => {
+    const r = await call('priya', 'insights'); assert.strictEqual(r.status, 200);
+    const by = Object.fromEntries(r.body.sources.map(s => [s.id, s]));
+    assert.strictEqual(by.G3.status, 'unclear'); assert.strictEqual(by.R1.status, 'unclear'); assert.strictEqual(by.G2.status, 'watch');
+    assert.strictEqual(by.A1.status, 'healthy'); assert(by.G3.reasons.length >= 1 && by.G3.proposal.includes('Exception:'));
+    assert(r.body.totals.documents >= 8 && r.body.recurring.length > 0);
+  });
+  await t('insights count real dismissals made in the app', async () => {
+    const before = (await call('priya', 'insights')).body.sources.find(s => s.id === 'G2').dismissed;
+    const doc = (await call('priya', 'documents', 'POST', { title: 'Insight probe', content: 'Big news!\nWe are live! Come see us!' })).body;
+    await call('priya', `documents/${doc.id}/review`, 'POST');
+    const d = (await call('priya', 'documents/' + doc.id)).body, f = d.versions.at(-1).findings.find(x => x.sourceId === 'G2');
+    await call('priya', `documents/${doc.id}/findings/${f.id}`, 'POST', { action: 'dismiss', reason: 'Brand voice for launch day' });
+    assert.strictEqual((await call('priya', 'insights')).body.sources.find(s => s.id === 'G2').dismissed, before + 1);
+  });
+  await t('only a manager can approve new wording; it is saved with history', async () => {
+    assert.strictEqual((await call('dana', 'sources/G3/revise', 'POST', { body: 'Avoid pressure words unless the deadline is real.' })).status, 403);
+    assert.strictEqual((await call('marcus', 'sources/G3/revise', 'POST', { body: 'x' })).status, 400);
+    const r = await call('marcus', 'sources/G3/revise', 'POST', { body: 'Avoid pressure words such as "hurry" unless a real deadline applies.' });
+    assert.strictEqual(r.status, 200); assert.strictEqual(r.body.revisions.length, 1);
+    assert((await call('priya', 'sources')).body.find(s => s.id === 'G3').body.includes('real deadline'));
+    assert.strictEqual((await call('marcus', 'sources/G3/revise', 'POST', { body: 'Avoid pressure words such as "hurry" unless a real deadline applies.' })).status, 400);
+  });
   await t('only managers edit the brand kit', async () => {
     assert.strictEqual((await call('priya', 'sources', 'POST', { kind: 'fact', title: 'x', body: 'y' })).status, 403);
     assert.strictEqual((await call('marcus', 'sources', 'POST', { kind: 'fact', title: 'Warranty', body: 'Nova has a 2-year warranty.' })).status, 200);
