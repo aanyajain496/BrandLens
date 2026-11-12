@@ -193,6 +193,91 @@ function carry(findings, content) {
   return findings.map(f => f.status === 'open' && !norm(content).includes(norm(f.excerpt)) ? { ...f, status: 'resolved' } : f);
 }
 
+
+// ---------- Improvement 1: rewrite options, each re-checked against the brand kit ----------
+const SOFT = s => s.replace(/\bthe world['’]s (?:fastest|best|first)\b/gi, 'a').replace(/\bguarantee[ds]? to\b/gi, 'designed to')
+  .replace(/\bguarantee[ds]?\b/gi, 'designed').replace(/\s*by 100%/gi, '').replace(/\s*100%/g, '').replace(/\s{2,}/g, ' ').trim();
+const CALM = s => s.replace(/!+/g, '.');
+const URGENT_MAP = { hurry: 'Take a look', 'hurry up': 'Take a look', 'last chance': 'Still available', 'act now': 'Take a look', "don't miss out": 'Have a look', 'don’t miss out': 'Have a look', 'limited time only': 'Available now' };
+function matchCase(model, s) { return model[0] === model[0].toUpperCase() ? s[0].toUpperCase() + s.slice(1) : s[0].toLowerCase() + s.slice(1); }
+function splitSentence(s) {
+  const mid = s.length / 2; let best = null;
+  const find = re => { for (const m of s.matchAll(re)) { const d = Math.abs(m.index - mid); if (!best || d < best.d) best = { d, m }; } };
+  find(/,\s+(?:and|but|so|which)\s+|;\s+| — /g); if (!best) find(/,\s+/g);
+  if (!best) return null;
+  const left = s.slice(0, best.m.index).replace(/[,;]$/, ''), right = s.slice(best.m.index + best.m[0].length);
+  return right ? left + '. ' + right[0].toUpperCase() + right.slice(1) : null;
+}
+function variants(f, content, sources) {
+  const v = [], add = (label, text) => { if (typeof text === 'string' && text !== f.excerpt && !v.some(x => x.text === text)) v.push({ label, text }); };
+  const facts = sources.filter(s => s.kind === 'fact');
+  const ownFact = facts.find(s => s.id === f.sourceId);
+  if (f.category === 'claim') {
+    const num = [...f.excerpt.matchAll(NUM)][0];
+    if (ownFact && f.replacement) {                       // number contradicts a fact
+      add('Minimal', f.replacement); add('Balanced', ownFact.body); add('On-brand', CALM(f.replacement));
+    } else if (SUPER.test(f.excerpt)) {                   // superlative or guarantee
+      const rel = facts.find(s => /hydrat|reminder/i.test(s.body) && /hydrat|reminder|mistake/i.test(f.excerpt));
+      add('Minimal', SOFT(f.excerpt)); if (rel) add('Balanced', rel.body); add('On-brand', CALM(SOFT(f.excerpt)));
+    } else if (num) {                                     // number with no approved fact
+      add('Minimal', f.excerpt.replace(num[0], '').replace(/\s+([,.!?])/g, '$1').replace(/\s{2,}/g, ' ')); add('Remove', '');
+    }
+  } else if (f.category === 'tone' && URGENT.test(f.excerpt)) {
+    const mapped = URGENT_MAP[f.excerpt.toLowerCase()] || 'Take a look';
+    add('Minimal', matchCase(f.excerpt, mapped)); add('On-brand', matchCase(f.excerpt, 'when you are ready'));
+  } else if (f.category === 'accessibility' && f.sourceId === 'R1') {
+    add('Minimal', splitSentence(f.excerpt));
+  } else if (f.replacement !== null && f.replacement !== undefined) add('Minimal', f.replacement);
+  return v;
+}
+const countBy = list => { const m = {}; for (const f of list) { const k = f.sourceId + '|' + f.category; m[k] = (m[k] || 0) + 1; } return m; };
+// A candidate is offered only if it removes the original issue and adds no medium/high issue.
+function checkCandidate(content, f, text, sources) {
+  const next = applyReplacement(content, f.excerpt, text);
+  if (next === null) return { ok: false, reason: 'text not found' };
+  const before = runRules(content, sources), after = runRules(next, sources), b = countBy(before), a = countBy(after);
+  const key = f.sourceId + '|' + f.category, seen = new Set();
+  const intro = after.filter(x => { const k = x.sourceId + '|' + x.category; if ((a[k] || 0) <= (b[k] || 0) || seen.has(k)) return false; seen.add(k); return true; });
+  const blocking = intro.filter(x => x.severity !== 'low');
+  const fixed = (a[key] || 0) < (b[key] || 0);
+  return { ok: fixed && blocking.length === 0, fixed, minor: intro.filter(x => x.severity === 'low').map(x => x.sourceId), blocking: blocking.map(x => x.sourceId) };
+}
+async function aiRewrites(f, content, sources) {
+  const src = sources.find(s => s.id === f.sourceId);
+  const system = 'You rewrite one piece of marketing text so it follows a brand rule while keeping the writer\'s meaning. Do not add new claims, numbers or promises. Return JSON only: {"options":[{"label":"Minimal|Balanced|On-brand","text":""}]} with up to three options. "text" replaces the excerpt exactly.';
+  const user = `RULE [${src.id}]: ${src.body}\nISSUE: ${f.why}\nEXCERPT: ${f.excerpt}\nCONTEXT: ${content.slice(0, 1500)}`;
+  const ctl = new AbortController(), timer = setTimeout(() => ctl.abort(), 15000);
+  try {
+    const r = await fetch('https://api.anthropic.com/v1/messages', { method: 'POST', signal: ctl.signal,
+      headers: { 'x-api-key': API_KEY, 'anthropic-version': '2023-06-01', 'content-type': 'application/json' },
+      body: JSON.stringify({ model: MODEL, max_tokens: 600, system, messages: [{ role: 'user', content: user }] }) });
+    if (!r.ok) throw new Error('AI service returned ' + r.status);
+    const j = await r.json(), m = (j.content || []).map(c => c.text || '').join('').replace(/```json|```/g, '').match(/\{[\s\S]*\}/);
+    if (!m) throw new Error('not JSON');
+    return (JSON.parse(m[0]).options || []).filter(o => o && ['Minimal', 'Balanced', 'On-brand'].includes(o.label) && typeof o.text === 'string');
+  } finally { clearTimeout(timer); }
+}
+async function rewriteOptions(f, content, sources) {
+  const options = []; let note = '';
+  for (const c of variants(f, content, sources)) {
+    const r = checkCandidate(content, f, c.text, sources);
+    if (r.ok) options.push({ label: c.label, text: c.text, origin: 'rule', note: r.minor.length ? `Fixes this issue; leaves a minor note (${r.minor.join(', ')}).` : '' });
+  }
+  if (API_KEY) {
+    try {
+      for (const c of await aiRewrites(f, content, sources)) {
+        const r = checkCandidate(content, f, c.text, sources);
+        if (!r.ok || options.some(x => x.text === c.text)) continue;
+        const item = { label: c.label, text: c.text, origin: 'ai', note: r.minor.length ? `Fixes this issue; leaves a minor note (${r.minor.join(', ')}).` : '' };
+        const i = options.findIndex(x => x.label === c.label); if (i >= 0) options[i] = item; else options.push(item);
+      }
+    } catch (e) { note = 'AI suggestions were unavailable, so these are rule-based options.'; }
+  }
+  const order = { Minimal: 0, Balanced: 1, 'On-brand': 2, Remove: 3 };
+  options.sort((a, b) => order[a.label] - order[b.label]);
+  return { options, note };
+}
+
 // ---------- API ----------
 const cur = d => d.versions[d.versions.length - 1];
 const log = (d, u, type, note = '') => d.events.push({ id: uid(), type, actor: u.name, role: u.role, note, at: now() });
@@ -209,6 +294,7 @@ async function route(req, user, body) {
   if (p[0] === 'sources' && m === 'POST') {
     need(user.role === 'manager', 403, 'Only a manager can edit the brand kit.');
     need(['guideline', 'fact', 'term'].includes(body.kind) && body.title && body.body, 400, 'Kind, title and text are required.');
+    need(body.title.length <= 100 && body.body.length <= 500, 400, 'Keep the title under 100 and the text under 500 characters.');
     const s = { id: (body.kind === 'fact' ? 'F' : body.kind === 'term' ? 'T' : 'G') + (DB.sources.length + 1) + uid().slice(0, 2), kind: body.kind, title: body.title, body: body.body };
     if (body.kind === 'term' && body.banned) { s.banned = body.banned; s.preferred = body.preferred || ''; }
     DB.sources.push(s); save(); return s;
@@ -217,6 +303,7 @@ async function route(req, user, body) {
   if (p[0] !== 'documents') throw new HttpError(404, 'Not found');
   if (!p[1] && m === 'POST') {
     need(user.role === 'creator', 403, 'Only creators can start a review.');
+    need(body.title && body.title.trim().length <= 120, 400, 'Titles can be up to 120 characters.');
     need(body.title && body.title.trim() && body.content && body.content.trim(), 400, 'Please add a title and some text.');
     need(body.content.length <= 20000, 400, 'Text is too long for this demo (20,000 characters).');
     const d = newDoc(body.title.trim(), body.content, user.id); DB.documents.push(d); save(); return d;
@@ -237,21 +324,27 @@ async function route(req, user, body) {
     if (body.content !== v.content) { d.versions.push({ n: v.n + 1, content: body.content, at: now(), findings: carry(v.findings, body.content), run: v.run }); log(d, user, 'edit', 'Edited text'); }
     save(); return d;
   }
+  if (act === 'findings' && p[4] === 'options' && m === 'GET') {
+    const f = v.findings.find(x => x.id === p[3]);
+    need(f && f.status === 'open', 404, 'That finding is no longer open.');
+    return rewriteOptions(f, v.content, DB.sources);
+  }
   if (act === 'findings' && m === 'POST') {
     need(user.role === 'creator' && editable, 403, 'Only the creator can resolve findings while the document is editable.');
     const f = v.findings.find(x => x.id === p[3]);
-    need(f && f.status === 'open', 404, 'That finding is not open.');
+    need(f && f.status === 'open', 409, 'That finding was already handled. Refresh to see the latest.');
     if (body.action === 'dismiss') {
       need(body.reason && body.reason.trim().length >= 3, 400, 'Please give a short reason for dismissing.');
       f.status = 'dismissed'; f.dismissReason = body.reason.trim(); log(d, user, 'dismiss', `${f.category}: ${f.dismissReason}`);
-    } else if (body.action === 'accept' || body.action === 'edit') {
-      const rep = body.action === 'edit' ? body.replacement : f.replacement;
-      need(typeof rep === 'string' && (body.action === 'edit' || f.replacement !== null), 400, 'There is no automatic fix for this one. Use Edit to write your own.');
+    } else if (['accept', 'edit', 'apply'].includes(body.action)) {
+      const rep = body.action === 'accept' ? f.replacement : body.replacement;
+      need(typeof rep === 'string' && rep.length <= 5000 && (body.action !== 'accept' || f.replacement !== null), 400, 'There is no automatic fix for this one. Use Edit to write your own.');
       const next = applyReplacement(v.content, f.excerpt, rep);
       need(next !== null, 409, 'That text is no longer in the document.');
       f.status = body.action === 'edit' ? 'edited' : 'accepted';
+      const how = body.action === 'apply' ? ` (${String(body.label || 'rewrite').slice(0, 20)} option)` : '';
       d.versions.push({ n: v.n + 1, content: next, at: now(), findings: carry(v.findings, next), run: v.run });
-      log(d, user, f.status, `${f.category}: "${f.excerpt.slice(0, 50)}"`);
+      log(d, user, f.status, `${f.category}: "${f.excerpt.slice(0, 50)}"${how}`);
     } else throw new HttpError(400, 'Unknown action.');
     save(); return d;
   }
@@ -291,7 +384,8 @@ function createServer() {
         const user = USERS[req.headers['x-user']];
         need(user, 401, 'Choose a demo user first.');
         let raw = ''; for await (const c of req) { raw += c; need(raw.length < 100000, 413, 'Request too large.'); }
-        return send(200, await route(req, user, raw ? JSON.parse(raw) : {}));
+        let parsed = {}; try { parsed = raw ? JSON.parse(raw) : {}; } catch { throw new HttpError(400, 'That request was not valid.'); }
+        return send(200, await route(req, user, parsed));
       }
       const file = path.join(__dirname, 'public', req.url.split('?')[0] === '/' ? 'index.html' : req.url.split('?')[0]);
       if (!file.startsWith(path.join(__dirname, 'public')) || !fs.existsSync(file)) { res.writeHead(404); return res.end('Not found'); }
@@ -300,4 +394,4 @@ function createServer() {
   });
 }
 if (require.main === module) createServer().listen(PORT, () => console.log(`BrandLens on http://localhost:${PORT} (${API_KEY ? 'AI on: ' + MODEL : 'rules-only mode'})`));
-module.exports = { runRules, isGrounded, parseAiFindings, applyReplacement, createServer, SEED_SOURCES };
+module.exports = { rewriteOptions, checkCandidate, variants, runRules, isGrounded, parseAiFindings, applyReplacement, createServer, SEED_SOURCES };
