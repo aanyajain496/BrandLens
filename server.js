@@ -34,8 +34,44 @@ const SAMPLE_DOCS = [
   { title: 'Newsletter intro', content: 'Welcome back. This month we are sharing how Nova helps you remember to drink water. Nova reduces missed hydration reminders by up to 30% in our 2025 user study. Thanks for reading.' },
 ];
 
+
+// Sample history so the Guideline Health dashboard has real-looking data from the first visit.
+const FIND = {
+  G3: { category: 'tone', severity: 'medium', ex: ['Hurry', 'Last chance', 'Act now'], why: 'Urgency language puts pressure on the reader.', sug: 'Remove the urgency phrase.' },
+  G2: { category: 'tone', severity: 'low', ex: ['Our biggest sale yet!', 'Meet the new range!'], why: 'Exclamation marks are limited by the style guide.', sug: 'Use a full stop instead.' },
+  R1: { category: 'accessibility', severity: 'low', ex: ['This sentence has more than 28 words and keeps going.'], why: 'This sentence is longer than 28 words.', sug: 'Split it into two shorter sentences.' },
+  A1: { category: 'accessibility', severity: 'low', ex: ['FREE', 'SALE', 'NEW'], why: 'This word is in all capitals.', sug: 'Write it in sentence case.' },
+  T1: { category: 'terminology', severity: 'low', ex: ['gadget'], why: '"gadget" is not an approved term.', sug: 'Use "smart bottle".' },
+  T2: { category: 'terminology', severity: 'low', ex: ['cheap'], why: '"cheap" is not an approved term.', sug: 'Use "affordable".' },
+  G4: { category: 'claim', severity: 'high', ex: ['the best bottle ever', 'guaranteed results'], why: 'Superlatives and guarantees are not allowed.', sug: 'Remove the superlative or guarantee.' },
+  F2: { category: 'claim', severity: 'high', ex: ['lasts 30 days'], why: 'The number contradicts an approved fact.', sug: 'Use the approved figure.' },
+};
+const HISTORY = [
+  { title: 'Spring sale email', items: [['G3', 'dismissed', 'Seasonal sale: urgency approved by marketing'], ['G3', 'dismissed', 'Seasonal sale: urgency approved by marketing'], ['G2', 'accepted'], ['A1', 'accepted'], ['T2', 'accepted']] },
+  { title: 'Partner announcement', items: [['R1', 'dismissed', 'Legal wording must stay as one sentence'], ['R1', 'dismissed', 'Legal wording must stay as one sentence'], ['G4', 'accepted'], ['G2', 'dismissed', 'Quoting a customer headline']] },
+  { title: 'Careers page', items: [['G3', 'dismissed', 'The deadline is real, not pressure'], ['G3', 'accepted'], ['T1', 'accepted'], ['A1', 'accepted']] },
+  { title: 'Social post batch', items: [['G3', 'dismissed', 'The deadline is real, not pressure'], ['G3', 'accepted'], ['G2', 'accepted'], ['G2', 'dismissed', 'Quoting a customer headline'], ['T1', 'accepted'], ['T2', 'accepted']] },
+  { title: 'Press note', items: [['R1', 'dismissed', 'Splitting the sentence changes the meaning'], ['R1', 'accepted'], ['G4', 'accepted'], ['G4', 'accepted'], ['F2', 'accepted']] },
+  { title: 'Help centre article', items: [['A1', 'accepted'], ['T1', 'accepted'], ['T1', 'accepted'], ['G2', 'accepted'], ['T2', 'accepted'], ['G4', 'dismissed', 'Customer review quoted verbatim'], ['F2', 'accepted'], ['G4', 'accepted'], ['G4', 'accepted'], ['G3', 'accepted'], ['T1', 'accepted']] },
+];
+function historyDocs() {
+  return HISTORY.map((h, di) => {
+    const at = new Date(Date.now() - (di + 2) * 3 * 86400000).toISOString();
+    const findings = h.items.map(([sid, status, reason], i) => {
+      const k = FIND[sid], s = SEED_SOURCES.find(x => x.id === sid);
+      return { id: uid(), status, origin: 'rule', category: k.category, severity: k.severity, excerpt: k.ex[i % k.ex.length], why: k.why, sourceId: sid,
+        sourceQuote: s.body, suggestion: k.sug, replacement: null, ...(reason ? { dismissReason: reason } : {}) };
+    });
+    const ev = (type, actor, role, note = '') => ({ id: uid(), type, actor, role, note, at });
+    return { id: uid(), title: h.title, author: 'priya', status: 'approved', createdAt: at, seed: true,
+      versions: [{ n: 1, content: findings.map(f => f.excerpt).join('. ') + '.', at, findings, run: { at, mode: 'rules-only', model: null, dropped: 0, note: 'Sample history' } }],
+      events: [ev('created', 'Priya', 'creator'), ev('review', 'Priya', 'creator', `${findings.length} findings (rules-only)`), ev('submit', 'Priya', 'creator'), ev('approve', 'Marcus', 'manager')] };
+  });
+}
+
 function seed() {
   const d = { sources: JSON.parse(JSON.stringify(SEED_SOURCES)), documents: [] };
+  d.documents.push(...historyDocs());
   for (const s of SAMPLE_DOCS) d.documents.push(newDoc(s.title, s.content, 'priya'));
   return d;
 }
@@ -45,7 +81,10 @@ function newDoc(title, content, author) {
     events: [{ id: uid(), type: 'created', actor: USERS[author].name, role: USERS[author].role, note: '', at: now() }] };
 }
 let DB;
-function load() { try { DB = JSON.parse(fs.readFileSync(DATA_FILE, 'utf8')); } catch { DB = seed(); save(); } }
+function load() {
+  try { DB = JSON.parse(fs.readFileSync(DATA_FILE, 'utf8')); } catch { DB = seed(); save(); }
+  if (!DB.documents.some(d => d.seed)) { DB.documents.unshift(...historyDocs()); save(); }
+}
 function save() { try { fs.writeFileSync(DATA_FILE, JSON.stringify(DB)); } catch (e) { console.error('save failed', e.message); } }
 
 // ---------- Review engine ----------
@@ -281,8 +320,40 @@ async function rewriteOptions(f, content, sources) {
 // ---------- API ----------
 const cur = d => d.versions[d.versions.length - 1];
 const log = (d, u, type, note = '') => d.events.push({ id: uid(), type, actor: u.name, role: u.role, note, at: now() });
-const summary = d => ({ id: d.id, title: d.title, status: d.status, author: USERS[d.author].name, version: cur(d).n,
+const summary = d => ({ sample: !!d.seed, id: d.id, title: d.title, status: d.status, author: USERS[d.author].name, version: cur(d).n,
   open: cur(d).findings.filter(f => f.status === 'open').length, updated: d.events[d.events.length - 1].at });
+
+// ---------- Improvement 2: Guideline Health ----------
+function proposeWording(src, reasons) {
+  if (!reasons.length) return src.body;
+  const top = reasons[0].text.replace(/[.\s]+$/, '');
+  const base = src.body.replace(/\s*Exception:.*$/s, '').trim();
+  return (base + ' Exception: ' + top + '.').slice(0, 500);
+}
+function insights() {
+  const per = {}; let findings = 0;
+  for (const d of DB.documents) for (const f of cur(d).findings) {
+    findings++;
+    const s = per[f.sourceId] || (per[f.sourceId] = { id: f.sourceId, flagged: 0, accepted: 0, dismissed: 0, open: 0, docs: new Set(), reasons: {} });
+    s.flagged++; s.docs.add(d.id);
+    if (f.status === 'accepted' || f.status === 'edited') s.accepted++;
+    else if (f.status === 'dismissed') { s.dismissed++; const r = (f.dismissReason || '').trim(); if (r) s.reasons[r] = (s.reasons[r] || 0) + 1; }
+    else if (f.status === 'open') s.open++;
+  }
+  const rows = Object.values(per).map(s => {
+    const src = DB.sources.find(x => x.id === s.id) || { title: s.id, kind: 'guideline', body: '' };
+    const handled = s.accepted + s.dismissed, rate = handled ? s.dismissed / handled : 0;
+    const reasons = Object.entries(s.reasons).map(([text, count]) => ({ text, count })).sort((a, b) => b.count - a.count);
+    const status = handled >= 3 && rate >= 0.5 ? 'unclear' : handled >= 3 && rate >= 0.3 ? 'watch' : 'healthy';
+    return { id: s.id, title: src.title, kind: src.kind, body: src.body, flagged: s.flagged, accepted: s.accepted, dismissed: s.dismissed, open: s.open,
+      docs: s.docs.size, handled, dismissRate: rate, status, reasons: reasons.slice(0, 4), revisions: (src.revisions || []).length,
+      lastRevision: (src.revisions || []).slice(-1)[0] || null, proposal: status === 'healthy' ? null : proposeWording(src, reasons) };
+  }).sort((a, b) => b.flagged - a.flagged);
+  const acc = rows.reduce((n, r) => n + r.accepted, 0), dis = rows.reduce((n, r) => n + r.dismissed, 0), handled = acc + dis;
+  return { totals: { documents: DB.documents.length, findings, handled, fixedRate: handled ? acc / handled : 0, dismissRate: handled ? dis / handled : 0 },
+    sources: rows, recurring: rows.filter(r => r.docs >= 2).slice(0, 5).map(r => ({ id: r.id, title: r.title, flagged: r.flagged, docs: r.docs })),
+    sample: DB.documents.some(d => d.seed) };
+}
 class HttpError extends Error { constructor(code, msg) { super(msg); this.code = code; } }
 const need = (cond, code, msg) => { if (!cond) throw new HttpError(code, msg); };
 
@@ -290,7 +361,15 @@ async function route(req, user, body) {
   const url = new URL(req.url, 'http://x'), p = url.pathname.replace(/^\/api\//, '').split('/'), m = req.method;
   if (p[0] === 'state' && m === 'GET') return { users: Object.values(USERS), docs: DB.documents.map(summary).reverse(),
     ai: API_KEY ? { on: true, model: MODEL } : { on: false } };
+  if (p[0] === 'insights' && m === 'GET') return insights();
   if (p[0] === 'sources' && m === 'GET') return DB.sources;
+  if (p[0] === 'sources' && p[2] === 'revise' && m === 'POST') {
+    need(user.role === 'manager', 403, 'Only a manager can approve new wording.');
+    const s = DB.sources.find(x => x.id === p[1]); need(s, 404, 'Source not found.');
+    const nb = String(body.body || '').trim(); need(nb.length >= 5 && nb.length <= 500, 400, 'The wording must be between 5 and 500 characters.');
+    need(nb !== s.body, 400, 'That is the same as the current wording.');
+    (s.revisions = s.revisions || []).push({ at: now(), by: user.name, old: s.body, new: nb }); s.body = nb; save(); return s;
+  }
   if (p[0] === 'sources' && m === 'POST') {
     need(user.role === 'manager', 403, 'Only a manager can edit the brand kit.');
     need(['guideline', 'fact', 'term'].includes(body.kind) && body.title && body.body, 400, 'Kind, title and text are required.');
