@@ -62,3 +62,11 @@ dialog::backdrop{background:rgba(31,42,46,.45)}.dlg{padding:20px}.dlg textarea{m
 .diff{margin:6px 0;font-family:Georgia,serif;line-height:1.6}
 del{background:var(--hi-bg);color:var(--hi);text-decoration:line-through;padding:0 2px;border-radius:3px}
 ins{background:var(--ok-bg);color:var(--ok);text-decoration:none;padding:0 2px;border-radius:3px}
+
+.stats{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin:14px 0 22px}@media(max-width:760px){.stats{grid-template-columns:repeat(2,1fr)}}
+.stat{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:14px}.stat b{display:block;font:600 1.7rem Georgia,serif;color:var(--accent)}
+.bar{height:9px;background:#e8e2d3;border-radius:99px;overflow:hidden}.bar i{display:block;height:100%;background:var(--accent)}.bar.rose i{background:var(--hi)}
+.hcard{margin-bottom:12px}.hcard textarea{min-height:84px;margin-top:6px}
+.badge{font-size:.76rem;font-weight:600;padding:2px 9px;border-radius:99px}.badge.unclear{background:var(--hi-bg);color:var(--hi)}.badge.watch{background:var(--md-bg);color:var(--md)}.badge.healthy{background:var(--ok-bg);color:var(--ok)}
+.rrow{display:grid;grid-template-columns:200px 1fr 80px;gap:10px;align-items:center;padding:6px 0}@media(max-width:700px){.rrow{grid-template-columns:1fr}}
+h2.sec{margin-top:26px}

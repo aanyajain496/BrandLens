@@ -133,7 +133,7 @@ function homeView() {
     ${creator ? `<div class="card" style="margin-bottom:18px"><h2>Start a new review</h2><input type="text" id="nTitle" placeholder="Title, for example “Spring campaign post”" style="margin-bottom:8px">
       <textarea id="nText" maxlength="20000" placeholder="Paste your draft here, or load a .txt file below"></textarea>
       <div class="row" style="margin-top:8px"><input type="file" id="nFile" accept=".txt,.md" aria-label="Load a text file"><button class="btn" data-act="create">Create and open</button></div></div>` : `<p class="muted">Only creators start new reviews. Switch to Priya to add one.</p>`}
-    <h2>All documents</h2>${S.docs.map(d => `<div class="card" style="margin-bottom:8px;cursor:pointer" data-act="open" data-id="${d.id}"><div class="row" style="justify-content:space-between"><strong>${esc(d.title)}</strong><span class="pill ${d.status}">${STATUS[d.status]}</span></div>
+    <h2>All documents</h2>${S.docs.map(d => `<div class="card" style="margin-bottom:8px;cursor:pointer" data-act="open" data-id="${d.id}"><div class="row" style="justify-content:space-between"><strong>${esc(d.title)}${d.sample ? ' <span class="muted small">(sample history)</span>' : ''}</strong><span class="pill ${d.status}">${STATUS[d.status]}</span></div>
       <div class="small muted">Version ${d.version} · ${d.open} open finding(s) · by ${esc(d.author)}</div></div>`).join('') || '<div class="empty">No documents yet.</div>'}`;
 }
 
@@ -148,12 +148,37 @@ function kitView() {
       <div style="margin-top:8px"><button class="btn" data-act="addSource">Add to brand kit</button></div></div>` : '<p class="muted small">Only a manager can edit the brand kit. Switch to Marcus to try it.</p>'}`;
 }
 
+
+function insightsView() {
+  const I = S.insights, mgr = me().role === 'manager', pct = n => Math.round(n * 100) + '%';
+  const stat = (v, l) => `<div class="stat"><b>${v}</b><span class="muted small">${l}</span></div>`;
+  const flagged = I.sources.filter(s => s.status !== 'healthy');
+  const maxF = Math.max(1, ...I.sources.map(s => s.flagged));
+  const card = s => `<div class="card hcard"><div class="row" style="justify-content:space-between"><strong>${esc(s.id)} · ${esc(s.title)}</strong>
+      <span class="badge ${s.status}">${s.status === 'unclear' ? 'Often dismissed: may be unclear' : 'Worth watching'}</span></div>
+    <p class="muted small" style="margin:.4em 0">Current wording: ${esc(s.body)}</p>
+    <div class="bar rose" title="Dismissed share"><i style="width:${pct(s.dismissRate)}"></i></div>
+    <p class="small" style="margin:.4em 0"><strong>${s.dismissed}</strong> of ${s.handled} handled findings were dismissed (${pct(s.dismissRate)}), across ${s.docs} documents.</p>
+    ${s.reasons.length ? `<div class="small"><strong>Reasons people gave:</strong><ul style="margin:.3em 0 .6em 1.1em;padding:0">${s.reasons.map(r => `<li>${esc(r.text)} <span class="muted">(${r.count})</span></li>`).join('')}</ul></div>` : ''}
+    <label class="small"><strong>Proposed clearer wording</strong>${mgr ? ' (you can edit it)' : ''}</label>
+    <textarea id="prop-${s.id}" maxlength="500" ${mgr ? '' : 'readonly'}>${esc(s.proposal)}</textarea>
+    <div class="row" style="margin-top:8px">${mgr ? `<button class="btn sm" data-act="revise" data-id="${s.id}">Approve new wording</button>` : '<span class="muted small">Sign in as Marcus (manager) to approve new wording.</span>'}
+      ${s.lastRevision ? `<span class="muted small">Last updated by ${esc(s.lastRevision.by)} on ${new Date(s.lastRevision.at).toLocaleDateString()}</span>` : ''}</div></div>`;
+  return `<h1>Guideline Health</h1>
+    <p class="muted">Which rules are broken most, and which ones people keep dismissing. A rule that is often dismissed is usually unclear, not ignored.${I.sample ? ' Includes sample history so there is something to look at.' : ''}</p>
+    <div class="stats">${stat(I.totals.documents, 'documents reviewed')}${stat(I.totals.findings, 'findings raised')}${stat(pct(I.totals.fixedRate), 'fixed by the writer')}${stat(pct(I.totals.dismissRate), 'dismissed')}</div>
+    <h2 class="sec" style="margin-top:0">Guidelines that may be unclear</h2>
+    ${flagged.map(card).join('') || '<div class="card empty">No guideline is being dismissed unusually often.</div>'}
+    <h2 class="sec">Recurring mistakes</h2><div class="card">${I.recurring.map(r => `<div class="rrow"><span><strong>${esc(r.id)}</strong> ${esc(r.title)}</span><div class="bar"><i style="width:${Math.round(r.flagged / maxF * 100)}%"></i></div><span class="small muted">${r.flagged} in ${r.docs} docs</span></div>`).join('') || '<span class="muted">Nothing repeats yet.</span>'}</div>
+    <h2 class="sec">All guidelines</h2><div class="card">${I.sources.map(s => `<div class="rrow"><span><strong>${esc(s.id)}</strong> ${esc(s.title)}</span><div class="bar ${s.status === 'healthy' ? '' : 'rose'}"><i style="width:${pct(s.dismissRate)}"></i></div><span class="badge ${s.status}">${s.status === 'unclear' ? 'unclear?' : s.status}</span></div>`).join('')}</div>`;
+}
+
 function render() {
-  const u = me(), main = S.view === 'doc' && S.doc ? docView() : S.view === 'kit' ? kitView() : homeView();
+  const u = me(), main = S.view === 'doc' && S.doc ? docView() : S.view === 'kit' ? kitView() : S.view === 'insights' ? insightsView() : homeView();
   document.getElementById('app').innerHTML = `<header class="top"><span class="logo" data-act="home">BrandLens</span><span class="sp"></span>
     <span class="aibadge" title="Disclosure of AI use">${S.ai.on ? 'AI-assisted review: ' + esc(S.ai.model) : 'Rules-only mode (no AI key set)'}</span>
     <label class="who">Viewing as <select id="who" aria-label="Switch demo user">${S.users.map(x => `<option value="${x.id}" ${x.id === S.user ? 'selected' : ''}>${x.name} (${x.role})</option>`).join('')}</select></label></header>
-    <div class="wrap"><aside class="side"><nav><a class="${S.view === 'home' ? 'on' : ''}" data-act="home">Documents</a><a class="${S.view === 'kit' ? 'on' : ''}" data-act="kit">Brand kit</a></nav>
+    <div class="wrap"><aside class="side"><nav><a class="${S.view === 'home' ? 'on' : ''}" data-act="home">Documents</a><a class="${S.view === 'kit' ? 'on' : ''}" data-act="kit">Brand kit</a><a class="${S.view === 'insights' ? 'on' : ''}" data-act="insights">Guideline health</a></nav>
     <p class="small muted" style="padding:0 10px">Signed in as ${esc(u.name)}. Creators write and fix, managers and reviewers decide.</p>
     <p class="small" style="padding:0 10px"><a href="#" data-act="reset" class="muted">Reset demo data</a></p></aside>
     <main>${S.busy ? `<p class="note">${S.busy === true ? 'Working…' : esc(S.busy)}</p>` : ''}${main}</main></div>`;
@@ -170,7 +195,9 @@ document.addEventListener('click', e => {
   const doc = () => 'documents/' + S.doc.id + '/';
   const map = {
     home: () => { S.view = 'home'; S.doc = null; history.replaceState(null, '', location.pathname); refresh().then(render); },
-    kit: () => run(async () => { S.sources = await api('sources'); S.view = 'kit'; }),
+    kit: () => run(async () => { S.sources = await api('sources'); S.view = 'kit'; S.doc = null; history.replaceState(null, '', location.pathname); }),
+    insights: () => run(async () => { S.insights = await api('insights'); S.view = 'insights'; S.doc = null; history.replaceState(null, '', location.pathname); }),
+    revise: () => run(async () => { await api('sources/' + id + '/revise', 'POST', { body: val('prop-' + id) }); S.insights = await api('insights'); S.sources = await api('sources'); toast('New wording approved and saved to the brand kit.'); }),
     tab: () => { S.tab = id; render(); },
     sel: () => { S.sel = id; render(); const m = document.querySelector('mark.sel'); if (m) m.scrollIntoView({ block: 'center', behavior: 'smooth' }); },
     open: () => run(async () => { S.sources = await api('sources'); await openDoc(id); }),
